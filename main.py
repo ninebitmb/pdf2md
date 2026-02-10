@@ -8,7 +8,9 @@ from prometheus_client import Counter, Histogram, make_asgi_app
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="PDF2MD Converter")
+MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
+
+app = FastAPI(title="pdf 2 md")
 md = MarkItDown()
 
 CONVERSION_DURATION = Histogram(
@@ -39,6 +41,9 @@ def convert(file: UploadFile) -> dict:
     try:
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as tmp:
             data = file.file.read()
+            if len(data) > MAX_FILE_SIZE:
+                CONVERSIONS_TOTAL.labels(status="oversize").inc()
+                raise HTTPException(status_code=413, detail=f"File too large, max {MAX_FILE_SIZE / 1024 / 1024:.4g}MB")
             CONVERSION_SIZE_BYTES.observe(len(data))
             tmp.write(data)
             tmp.flush()
