@@ -217,25 +217,96 @@ def _split_multi_column_blocks(blocks: list[str]) -> list[str]:
     return result
 
 
+def _split_at_second_code(lines: list[str], first_entity_label: str) -> list[str] | None:
+    """Split lines at the second company code occurrence.
+
+    Returns [first_entity_block, second_entity_block] or None if can't split.
+    """
+    first_lines: list[str] = []
+    second_lines: list[str] = []
+    found_first_code = False
+    split_done = False
+
+    for line in lines:
+        if split_done:
+            second_lines.append(line)
+        elif re.search(r"(?:company\s+code|įmonės\s+kodas)", line, re.IGNORECASE):
+            if found_first_code:
+                # Second code — look back for the company name (line before this)
+                if first_lines and not re.search(
+                    r"(?:kodas|code|vat|pvm|iban|bank|address|adresas)",
+                    first_lines[-1], re.IGNORECASE,
+                ):
+                    company_name_line = first_lines.pop()
+                    second_lines.append(company_name_line)
+                second_lines.append(line)
+                split_done = True
+            else:
+                found_first_code = True
+                first_lines.append(line)
+        else:
+            first_lines.append(line)
+
+    if not split_done:
+        return None
+
+    return ["\n".join(first_lines), "\n".join(second_lines)]
+
+
 def _fix_merged_entity_blocks(blocks: list[str]) -> list[str]:
     """Fix Docling output where seller/buyer content is merged into one block.
 
-    Detects pattern: empty '## Seller' block followed by '## Buyer' with
-    two sets of company codes — splits the buyer block into seller + buyer.
+    Handles two patterns:
+    1. Empty '## Seller' followed by '## Buyer' with merged content
+    2. Single 'Pardavėjas:' block containing both seller and buyer data (2 company codes)
     """
     result: list[str] = []
     i = 0
     seller_kw = SELLER_KEYWORDS
     buyer_kw = BUYER_KEYWORDS
+    all_entity_kw = seller_kw | buyer_kw
 
     while i < len(blocks):
         block = blocks[i]
-        block_clean = re.sub(r"#+\s*", "", block).strip().lower()
+        block_clean = re.sub(r"[#*:]+", "", block.split("\n")[0]).strip().lower()
 
-        # Check if this is an empty seller/buyer header
-        if block_clean in seller_kw | buyer_kw and i + 1 < len(blocks):
+        # Pattern 2: single block with entity keyword + 2 company codes
+        if block_clean in all_entity_kw or block_clean.rstrip(":") in all_entity_kw:
+            lines = block.split("\n")
+            code_count = sum(
+                1 for l in lines
+                if re.search(r"(?:company\s+code|įmonės\s+kodas)", l, re.IGNORECASE)
+            )
+            if code_count >= 2:
+                # Split at the second company code
+                split_result = _split_at_second_code(lines, block_clean)
+                if split_result:
+                    result.extend(split_result)
+                    i += 1
+                    logger.debug("Split single merged entity block (2 codes)")
+                    continue
+
+        # Pattern 3: orphaned entity data block followed by empty entity header
+        # e.g. [company data block] then [Pirkėjas:] — merge data into the header
+        if (block_clean not in all_entity_kw
+                and block_clean.rstrip(":") not in all_entity_kw
+                and i + 1 < len(blocks)):
             next_block = blocks[i + 1]
-            next_clean = re.sub(r"#+\s*", "", next_block.split("\n")[0]).strip().lower()
+            next_clean = re.sub(r"[#*:]+", "", next_block.split("\n")[0]).strip().lower()
+            if next_clean in all_entity_kw or next_clean.rstrip(":") in all_entity_kw:
+                # Check if current block has company codes (it's entity data)
+                if re.search(r"(?:company\s+code|įmonės\s+kodas)", block, re.IGNORECASE):
+                    # Merge: put the entity header before data
+                    merged = next_block.split("\n")[0] + "\n" + block
+                    result.append(merged)
+                    i += 2  # Skip both blocks
+                    logger.debug("Merged orphaned entity data with following header '%s'", next_clean)
+                    continue
+
+        # Pattern 1: empty header followed by merged block
+        if block_clean in all_entity_kw and i + 1 < len(blocks):
+            next_block = blocks[i + 1]
+            next_clean = re.sub(r"[#*:]+", "", next_block.split("\n")[0]).strip().lower()
 
             # Next block is the other entity with merged content?
             is_seller_then_buyer = block_clean in seller_kw and next_clean in buyer_kw
@@ -291,6 +362,43 @@ def _fix_merged_entity_blocks(blocks: list[str]) -> list[str]:
     return result
 
 
+def _merge_orphan_entity_data(blocks: list[str]) -> list[str]:
+    """Merge orphaned company data blocks with adjacent empty entity headers.
+
+    Handles: [seller block] [Ninebit MB + codes] [Pirkėjas:] [table]
+    Merges [Ninebit MB + codes] into [Pirkėjas: Ninebit MB + codes]
+    """
+    all_kw = ENTITY_KEYWORDS
+    result: list[str] = []
+    i = 0
+    while i < len(blocks):
+        block = blocks[i]
+        block_first = re.sub(r"[#*:]+", "", block.split("\n")[0]).strip().lower()
+
+        # Check if this is an entity data block (has company codes but not an entity keyword)
+        is_entity_header = block_first in all_kw or block_first.rstrip(":") in all_kw
+        has_code = bool(re.search(r"(?:company\s+code|įmonės\s+kodas)", block, re.IGNORECASE))
+
+        if not is_entity_header and has_code and i + 1 < len(blocks):
+            next_block = blocks[i + 1]
+            next_first = re.sub(r"[#*:]+", "", next_block.split("\n")[0]).strip().lower()
+            next_is_header = next_first in all_kw or next_first.rstrip(":") in all_kw
+
+            if next_is_header:
+                # Merge: put header before data
+                header_line = next_block.split("\n")[0]
+                merged = header_line + "\n" + block
+                result.append(merged)
+                i += 2
+                logger.debug("Merged orphan entity data with header '%s'", next_first)
+                continue
+
+        result.append(block)
+        i += 1
+
+    return result
+
+
 def classify_blocks(blocks: list[str]) -> list[tuple[str, str]]:
     """Classify each block into a section type.
 
@@ -298,6 +406,7 @@ def classify_blocks(blocks: list[str]) -> list[tuple[str, str]]:
     Section types: metadata, seller, buyer, items, totals, payment, notes, document_info, unknown.
     """
     blocks = _fix_merged_entity_blocks(blocks)
+    blocks = _merge_orphan_entity_data(blocks)
     blocks = _split_multi_column_blocks(blocks)
 
     classified: list[tuple[str, str]] = []

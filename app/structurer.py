@@ -326,8 +326,40 @@ def _extract_entity(text: str, entity: EntityInfo) -> None:
                     break
 
 
+def _extract_totals_from_lines(lines: list[str], data: InvoiceData) -> None:
+    """Extract totals where label and value are on consecutive lines.
+
+    Handles: 'Iš viso be PVM\\n352.89' or 'PVM ( 21% )\\n74.11'
+    """
+    for i, line in enumerate(lines):
+        low = line.lower()
+        next_val = ""
+        if i + 1 < len(lines):
+            candidate = lines[i + 1].strip()
+            if re.match(r"^\d[\d\s.,]*$", candidate):
+                next_val = candidate
+
+        if not next_val:
+            continue
+
+        if not data.total_without_vat and re.search(r"iš\s*viso\s*be\s*pvm|bendra\s*suma\s*be|total\s*without", low):
+            data.total_without_vat = normalize_amount(next_val)
+        elif not data.vat_amount and re.search(r"pvm\s*\(|pvm\s*suma|vat\s*amount", low):
+            data.vat_amount = normalize_amount(next_val)
+        elif not data.grand_total and re.search(r"iš\s*viso\s*su\s*pvm|bendra\s*suma|viso\s*mokėti|grand\s*total", low):
+            data.grand_total = normalize_amount(next_val)
+
+
 def _extract_totals(text: str, data: InvoiceData) -> None:
-    """Extract total amounts from totals block."""
+    """Extract total amounts from totals block.
+
+    Handles both inline ('Total: 100.00') and next-line ('Total\n100.00') formats.
+    """
+    # Try line-by-line extraction for formats where label and value are on separate lines
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    _extract_totals_from_lines(lines, data)
+
+    # Then try inline regex on full text
     if not data.total_without_vat:
         m = TOTAL_WITHOUT_VAT_RE.search(text)
         if m:
