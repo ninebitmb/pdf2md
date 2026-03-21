@@ -2,6 +2,10 @@
 
 import logging
 import threading
+import warnings
+
+# Suppress noisy PyTorch warning on CPU-only servers
+warnings.filterwarnings("ignore", message=".*pin_memory.*")
 
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import (
