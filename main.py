@@ -14,7 +14,11 @@ logger = logging.getLogger(__name__)
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 ALLOWED_CONTENT_TYPES = {"application/pdf", "application/octet-stream"}
 
-app = FastAPI(title="pdf 2 md")
+app = FastAPI(
+    title="PDF2MD",
+    description="PDF to Markdown conversion service powered by Docling with OCR fallback.",
+    version="0.3.0",
+)
 
 CONVERSION_DURATION = Histogram(
     "pdf_conversion_duration_seconds",
@@ -36,7 +40,6 @@ app.mount("/metrics", metrics_app)
 
 
 def _read_upload(file: UploadFile) -> bytes:
-    """Read and validate uploaded file. Returns file bytes."""
     if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
         CONVERSIONS_TOTAL.labels(status="rejected").inc()
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
@@ -61,7 +64,6 @@ def _read_upload(file: UploadFile) -> bytes:
 
 
 def _extract_pdf(data: bytes) -> tuple[str, int, float]:
-    """Extract markdown from PDF bytes. Returns (markdown, pages, duration_ms)."""
     try:
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as tmp:
             tmp.write(data)
@@ -89,9 +91,23 @@ def _extract_pdf(data: bytes) -> tuple[str, int, float]:
         raise HTTPException(status_code=500, detail="Conversion failed")
 
 
-@app.post("/convert")
+@app.post(
+    "/convert",
+    summary="Convert PDF to Markdown",
+    description=(
+        "Converts a PDF file to clean Markdown using Docling ML-based extraction. "
+        "Preserves document structure: headings, tables, lists. "
+        "If the PDF is image-only (scanned), automatically falls back to OCR. "
+        "Returns raw Docling output faithful to the PDF layout."
+    ),
+    response_description="Markdown content with page count and processing time",
+    responses={
+        400: {"description": "Invalid file (not PDF, empty, or corrupted)"},
+        413: {"description": "File too large (max 50MB) or too complex"},
+        422: {"description": "No text could be extracted (even with OCR)"},
+    },
+)
 def convert(file: UploadFile) -> dict:
-    """Convert PDF to clean Docling markdown — faithful to the PDF layout."""
     data = _read_upload(file)
     raw_markdown, page_count, duration_ms = _extract_pdf(data)
 
@@ -103,9 +119,23 @@ def convert(file: UploadFile) -> dict:
     }
 
 
-@app.post("/experiment")
+@app.post(
+    "/experiment",
+    summary="Convert PDF to structured invoice Markdown",
+    description=(
+        "Converts a PDF invoice to structured Markdown with standardized Lithuanian sections: "
+        "Metaduomenys, Pardavėjas, Pirkėjas, Prekės/Paslaugos, Sumos, Mokėjimo rekvizitai, Pastabos. "
+        "Uses Docling extraction + regex post-processing pipeline. "
+        "Includes confidence score (0-1) indicating extraction quality. "
+        "Also returns raw_markdown for fallback when confidence is low."
+    ),
+    response_description="Structured markdown with metadata, confidence score, and raw fallback",
+    responses={
+        400: {"description": "Invalid file"},
+        422: {"description": "No text could be extracted"},
+    },
+)
 def experiment(file: UploadFile) -> ConvertResponse:
-    """Convert PDF to structured invoice markdown with Lithuanian sections."""
     data = _read_upload(file)
     raw_markdown, page_count, duration_ms = _extract_pdf(data)
 
@@ -126,6 +156,10 @@ def experiment(file: UploadFile) -> ConvertResponse:
     )
 
 
-@app.get("/health")
+@app.get(
+    "/health",
+    summary="Health check",
+    description="Returns service status. Used by Docker healthcheck and load balancers.",
+)
 def health() -> dict:
     return {"status": "ok"}
