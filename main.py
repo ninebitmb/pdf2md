@@ -1,8 +1,9 @@
 import logging
 import tempfile
 import time
+from enum import StrEnum
 
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException, Query, UploadFile
 from prometheus_client import Counter, Histogram, make_asgi_app
 
 from app.converter import EmptyExtractionError, extract_raw
@@ -21,10 +22,16 @@ ALLOWED_CONTENT_TYPES = {
     "image/webp",
 }
 
+
+class OutputFormat(StrEnum):
+    MARKDOWN = "markdown"
+    JSON = "json"
+
+
 app = FastAPI(
     title="PDF2MD",
-    description="PDF to Markdown conversion service powered by Docling with OCR fallback.",
-    version="0.3.0",
+    description="PDF/image to Markdown conversion service powered by Docling with OCR fallback.",
+    version="0.4.0",
 )
 
 CONVERSION_DURATION = Histogram(
@@ -49,7 +56,7 @@ app.mount("/metrics", metrics_app)
 def _read_upload(file: UploadFile) -> bytes:
     if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
         CONVERSIONS_TOTAL.labels(status="rejected").inc()
-        raise HTTPException(status_code=400, detail="Only PDF files are accepted")
+        raise HTTPException(status_code=400, detail="Only PDF and image files are accepted")
 
     try:
         data = file.file.read()
@@ -70,60 +77,73 @@ def _read_upload(file: UploadFile) -> bytes:
     return data
 
 
-def _extract_pdf(data: bytes, filename: str = "document.pdf") -> tuple[str, int, float]:
+def _extract(data: bytes, filename: str = "document.pdf") -> tuple[str, int, dict, float]:
+    """Extract content from PDF/image. Returns (markdown, pages, doc_dict, duration_ms)."""
     suffix = "." + filename.rsplit(".", 1)[-1] if "." in filename else ".pdf"
     try:
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tmp:
             tmp.write(data)
             tmp.flush()
             start = time.time()
-            raw_markdown, page_count = extract_raw(tmp.name)
+            md, pages, doc_dict = extract_raw(tmp.name)
             duration_ms = (time.time() - start) * 1000
             CONVERSION_DURATION.observe(duration_ms / 1000)
-            return raw_markdown, page_count, duration_ms
+            return md, pages, doc_dict, duration_ms
     except EmptyExtractionError as e:
         CONVERSIONS_TOTAL.labels(status="no_text").inc()
         logger.warning("Empty extraction: %s", e)
         raise HTTPException(status_code=422, detail=str(e))
     except (ValueError, RuntimeError) as e:
         CONVERSIONS_TOTAL.labels(status="bad_input").inc()
-        logger.warning("Invalid PDF file: %s", e)
-        raise HTTPException(status_code=400, detail="The uploaded file is not a valid PDF or is corrupted")
+        logger.warning("Invalid file: %s", e)
+        raise HTTPException(status_code=400, detail="The uploaded file is not valid or is corrupted")
     except MemoryError:
         CONVERSIONS_TOTAL.labels(status="oom").inc()
-        logger.error("Out of memory processing PDF")
-        raise HTTPException(status_code=413, detail="PDF is too complex to process")
+        logger.error("Out of memory processing file")
+        raise HTTPException(status_code=413, detail="File is too complex to process")
     except Exception:
         CONVERSIONS_TOTAL.labels(status="error").inc()
-        logger.exception("Failed to convert PDF")
+        logger.exception("Failed to convert file")
         raise HTTPException(status_code=500, detail="Conversion failed")
 
 
 @app.post(
     "/convert",
-    summary="Convert PDF/image to Markdown",
+    summary="Convert PDF/image to Markdown or JSON",
     description=(
-        "Converts a PDF or image file to clean Markdown using Docling ML-based extraction. "
+        "Converts a PDF or image file using Docling ML-based extraction. "
         "Supports PDF, JPG, PNG, TIFF, WebP. "
-        "Preserves document structure: headings, tables, lists. "
-        "Detects multi-column layouts using element positions. "
-        "If image-only, automatically falls back to OCR. "
+        "Detects multi-column layouts using element bounding boxes. "
+        "Falls back to OCR automatically for scanned/image-only documents.\n\n"
+        "**format=markdown** (default): Clean markdown with headings, tables, lists.\n\n"
+        "**format=json**: Full Docling document structure with element types, "
+        "bounding boxes, table cell data, and reading order."
     ),
-    response_description="Markdown content with page count and processing time",
     responses={
         400: {"description": "Invalid file (unsupported format, empty, or corrupted)"},
         413: {"description": "File too large (max 50MB) or too complex"},
         422: {"description": "No text could be extracted (even with OCR)"},
     },
 )
-def convert(file: UploadFile) -> dict:
+def convert(
+    file: UploadFile,
+    format: OutputFormat = Query(OutputFormat.MARKDOWN, description="Output format: markdown or json"),
+) -> dict:
     data = _read_upload(file)
-    raw_markdown, page_count, duration_ms = _extract_pdf(data, file.filename or "document.pdf")
+    md, pages, doc_dict, duration_ms = _extract(data, file.filename or "document.pdf")
 
     CONVERSIONS_TOTAL.labels(status="success").inc()
+
+    if format == OutputFormat.JSON:
+        return {
+            "document": doc_dict,
+            "pages": pages,
+            "processing_time_ms": duration_ms,
+        }
+
     return {
-        "markdown": raw_markdown,
-        "pages": page_count,
+        "markdown": md,
+        "pages": pages,
         "processing_time_ms": duration_ms,
     }
 
@@ -134,11 +154,9 @@ def convert(file: UploadFile) -> dict:
     description=(
         "Converts a PDF invoice to structured Markdown with standardized Lithuanian sections: "
         "Metaduomenys, Pardavėjas, Pirkėjas, Prekės/Paslaugos, Sumos, Mokėjimo rekvizitai, Pastabos. "
-        "Uses Docling extraction + regex post-processing pipeline. "
-        "Includes confidence score (0-1) indicating extraction quality. "
-        "Also returns raw_markdown for fallback when confidence is low."
+        "Uses Docling extraction + post-processing pipeline. "
+        "Includes confidence score (0-1) and raw_markdown fallback."
     ),
-    response_description="Structured markdown with metadata, confidence score, and raw fallback",
     responses={
         400: {"description": "Invalid file"},
         422: {"description": "No text could be extracted"},
@@ -146,15 +164,15 @@ def convert(file: UploadFile) -> dict:
 )
 def experiment(file: UploadFile) -> ConvertResponse:
     data = _read_upload(file)
-    raw_markdown, page_count, duration_ms = _extract_pdf(data, file.filename or "document.pdf")
+    md, pages, _, duration_ms = _extract(data, file.filename or "document.pdf")
 
-    result = structure_invoice(raw_markdown, pages=page_count)
+    result = structure_invoice(md, pages=pages)
 
     CONVERSIONS_TOTAL.labels(status="success").inc()
     return ConvertResponse(
         success=result.confidence >= 0.1,
         markdown=result.markdown,
-        raw_markdown=raw_markdown,
+        raw_markdown=md,
         pages=result.pages,
         confidence=result.confidence,
         document_type=result.document_type,

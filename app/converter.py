@@ -96,11 +96,11 @@ def _has_real_content(md_text: str) -> bool:
     )
 
 
-def extract_raw(pdf_path: str) -> tuple[str, int]:
+def extract_raw(pdf_path: str) -> tuple[str, int, dict]:
     """Extract column-aware markdown from PDF. Falls back to OCR if no text found.
 
     Uses Docling's bbox data for multi-column detection.
-    Returns (markdown, page_count).
+    Returns (markdown, page_count, doc_dict).
     Raises EmptyExtractionError if OCR also yields nothing.
     """
     from app.markdown_builder import build_markdown
@@ -123,4 +123,5 @@ def extract_raw(pdf_path: str) -> tuple[str, int]:
         )
 
     logger.debug("Extracted %d chars, %d pages", len(md_text), page_count)
-    return md_text, page_count
+    doc_dict = doc.export_to_dict()
+    return md_text, page_count, doc_dict
