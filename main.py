@@ -12,7 +12,14 @@ from app.structurer import structure_invoice
 logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
-ALLOWED_CONTENT_TYPES = {"application/pdf", "application/octet-stream"}
+ALLOWED_CONTENT_TYPES = {
+    "application/pdf",
+    "application/octet-stream",
+    "image/jpeg",
+    "image/png",
+    "image/tiff",
+    "image/webp",
+}
 
 app = FastAPI(
     title="PDF2MD",
@@ -63,9 +70,10 @@ def _read_upload(file: UploadFile) -> bytes:
     return data
 
 
-def _extract_pdf(data: bytes) -> tuple[str, int, float]:
+def _extract_pdf(data: bytes, filename: str = "document.pdf") -> tuple[str, int, float]:
+    suffix = "." + filename.rsplit(".", 1)[-1] if "." in filename else ".pdf"
     try:
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tmp:
             tmp.write(data)
             tmp.flush()
             start = time.time()
@@ -93,23 +101,24 @@ def _extract_pdf(data: bytes) -> tuple[str, int, float]:
 
 @app.post(
     "/convert",
-    summary="Convert PDF to Markdown",
+    summary="Convert PDF/image to Markdown",
     description=(
-        "Converts a PDF file to clean Markdown using Docling ML-based extraction. "
+        "Converts a PDF or image file to clean Markdown using Docling ML-based extraction. "
+        "Supports PDF, JPG, PNG, TIFF, WebP. "
         "Preserves document structure: headings, tables, lists. "
-        "If the PDF is image-only (scanned), automatically falls back to OCR. "
-        "Returns raw Docling output faithful to the PDF layout."
+        "Detects multi-column layouts using element positions. "
+        "If image-only, automatically falls back to OCR. "
     ),
     response_description="Markdown content with page count and processing time",
     responses={
-        400: {"description": "Invalid file (not PDF, empty, or corrupted)"},
+        400: {"description": "Invalid file (unsupported format, empty, or corrupted)"},
         413: {"description": "File too large (max 50MB) or too complex"},
         422: {"description": "No text could be extracted (even with OCR)"},
     },
 )
 def convert(file: UploadFile) -> dict:
     data = _read_upload(file)
-    raw_markdown, page_count, duration_ms = _extract_pdf(data)
+    raw_markdown, page_count, duration_ms = _extract_pdf(data, file.filename or "document.pdf")
 
     CONVERSIONS_TOTAL.labels(status="success").inc()
     return {
@@ -137,7 +146,7 @@ def convert(file: UploadFile) -> dict:
 )
 def experiment(file: UploadFile) -> ConvertResponse:
     data = _read_upload(file)
-    raw_markdown, page_count, duration_ms = _extract_pdf(data)
+    raw_markdown, page_count, duration_ms = _extract_pdf(data, file.filename or "document.pdf")
 
     result = structure_invoice(raw_markdown, pages=page_count)
 
