@@ -97,16 +97,29 @@ def normalize_percentage(raw: str) -> str:
     return raw.strip()
 
 
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_STRIKETHROUGH_RE = re.compile(r"~~(.+?)~~")
+_ITALIC_RE = re.compile(r"_(.+?)_")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
 def strip_html_tags(raw: str) -> str:
     """Remove all HTML tags from text."""
-    return re.sub(r"<[^>]+>", " ", raw)
+    return _HTML_TAG_RE.sub(" ", raw)
 
 
 def strip_markdown_formatting(raw: str) -> str:
     """Remove markdown formatting: bold, italic, strikethrough."""
     s = raw.replace("**", "")
-    s = re.sub(r"~~(.+?)~~", r"\1", s)
-    s = re.sub(r"_(.+?)_", r"\1", s)
+    s = _STRIKETHROUGH_RE.sub(r"\1", s)
+    s = _ITALIC_RE.sub(r"\1", s)
     return s
 
+
+def clean_field(raw: str) -> str:
+    """Clean text: strip HTML, markdown formatting, collapse whitespace."""
+    s = strip_html_tags(raw)
+    s = strip_markdown_formatting(s)
+    s = _WHITESPACE_RE.sub(" ", s)
+    return s.strip()
 

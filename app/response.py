@@ -1,22 +1,6 @@
-"""Pydantic response models and enums for the converter API."""
-
-from enum import StrEnum
+"""Pydantic response model for the /experiment endpoint."""
 
 from pydantic import BaseModel, Field
-
-
-class DocumentType(StrEnum):
-    INVOICE = "invoice"
-    VAT_INVOICE = "vat_invoice"
-    CREDIT_NOTE = "credit_note"
-    PROFORMA = "proforma"
-    UNKNOWN = "unknown"
-
-
-class Language(StrEnum):
-    LT = "lt"
-    EN = "en"
-    UNKNOWN = "unknown"
 
 
 class ConvertResponse(BaseModel):

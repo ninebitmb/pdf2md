@@ -6,7 +6,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 
-from app.normalizers import normalize_amount, normalize_date, normalize_iban, strip_html_tags, strip_markdown_formatting
+from app.normalizers import clean_field, normalize_amount, normalize_date, normalize_iban
 from app.patterns import (
     ADDRESS_RE,
     BANK_CODE_RE,
@@ -487,12 +487,7 @@ def _clean_address(raw: str) -> str:
     return addr.strip().rstrip(",").strip()
 
 
-def _clean_field(value: str) -> str:
-    """Clean extracted field value from markdown/HTML artifacts."""
-    value = strip_html_tags(value)
-    value = strip_markdown_formatting(value)
-    value = re.sub(r"\s+", " ", value)
-    return value.strip()
+_clean_field = clean_field
 
 
 # --- Assembly ---
@@ -517,11 +512,9 @@ def _assemble_markdown(data: InvoiceData) -> str:
     """Assemble final structured markdown from extracted data."""
     sections: list[str] = []
 
-    # Title
     title = DOCUMENT_TYPE_TITLES.get(data.document_type, "Sąskaita faktūra")
     sections.append(f"# {title}")
 
-    # Metadata
     meta_lines: list[str] = []
     if data.invoice_number:
         meta_lines.append(f"- **Numeris:** {data.invoice_number}")
@@ -539,7 +532,6 @@ def _assemble_markdown(data: InvoiceData) -> str:
     if meta_lines:
         sections.append("## Metaduomenys\n" + "\n".join(meta_lines))
 
-    # Seller / Buyer (DRY)
     seller_section = _entity_section(data.seller, "Pardavėjas")
     if seller_section:
         sections.append(seller_section)
@@ -548,11 +540,9 @@ def _assemble_markdown(data: InvoiceData) -> str:
     if buyer_section:
         sections.append(buyer_section)
 
-    # Items table
     if data.items_table:
         sections.append("## Prekės / Paslaugos\n\n" + data.items_table)
 
-    # Totals
     total_lines: list[str] = []
     if data.total_without_vat:
         total_lines.append(f"- **Suma be PVM:** {data.total_without_vat}")
@@ -565,7 +555,6 @@ def _assemble_markdown(data: InvoiceData) -> str:
     if total_lines:
         sections.append("## Sumos\n" + "\n".join(total_lines))
 
-    # Payment info
     payment_lines: list[str] = []
     if data.bank_name:
         payment_lines.append(f"- **Bankas:** {data.bank_name}")
@@ -580,13 +569,11 @@ def _assemble_markdown(data: InvoiceData) -> str:
     if payment_lines:
         sections.append("## Mokėjimo rekvizitai\n" + "\n".join(payment_lines))
 
-    # Notes
     if data.notes:
         notes_text = "\n".join(n for n in data.notes if n.strip())
         if notes_text:
             sections.append("## Pastabos\n" + notes_text)
 
-    # Document info
     if data.issued_by:
         sections.append("## Dokumento informacija\n" + f"- **Išrašė:** {data.issued_by}")
 

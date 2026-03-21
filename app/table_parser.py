@@ -6,7 +6,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-from app.normalizers import normalize_amount, normalize_percentage, strip_html_tags, strip_markdown_formatting
+from app.normalizers import clean_field, normalize_amount, normalize_percentage
 from app.patterns import TABLE_COLUMN_MAP, TABLE_SKIP_COLUMNS
 
 logger = logging.getLogger(__name__)
@@ -65,12 +65,7 @@ def extract_table_from_blocks(
     return remaining, TableResult(markdown=table, grand_total=grand_total)
 
 
-def _clean_cell(value: str) -> str:
-    """Clean a table cell value: remove HTML tags, markdown formatting, excess whitespace."""
-    value = strip_html_tags(value)
-    value = strip_markdown_formatting(value)
-    value = re.sub(r"\s+", " ", value)
-    return value.strip()
+_clean_cell = clean_field
 
 
 def _parse_pipe_table(text: str) -> list[dict[str, str]]:

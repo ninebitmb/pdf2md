@@ -1,6 +1,7 @@
 """PDF extraction using Docling for structured document understanding."""
 
 import logging
+import threading
 
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import (
@@ -43,15 +44,17 @@ def _create_converter() -> DocumentConverter:
     )
 
 
-# Module-level singleton — heavy to initialize, reuse across requests
 _converter: DocumentConverter | None = None
+_converter_lock = threading.Lock()
 
 
 def _get_converter() -> DocumentConverter:
     global _converter
     if _converter is None:
-        logger.info("Initializing Docling DocumentConverter")
-        _converter = _create_converter()
+        with _converter_lock:
+            if _converter is None:
+                logger.info("Initializing Docling DocumentConverter")
+                _converter = _create_converter()
     return _converter
 
 
@@ -65,10 +68,12 @@ def extract_raw(pdf_path: str) -> tuple[str, int]:
     result = converter.convert(pdf_path)
     doc = result.document
 
-    page_count = doc.num_pages() if hasattr(doc, 'num_pages') else 1
-    # Fallback page count from pages
     if hasattr(doc, 'pages') and doc.pages:
         page_count = len(doc.pages)
+    elif hasattr(doc, 'num_pages'):
+        page_count = doc.num_pages()
+    else:
+        page_count = 1
 
     md_text = doc.export_to_markdown()
 

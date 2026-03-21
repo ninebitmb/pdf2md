@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 
-from app.patterns import IBAN_RE, SECTION_KEYWORDS
+from app.patterns import BUYER_KEYWORDS, ENTITY_KEYWORDS, IBAN_RE, SECTION_KEYWORDS, SELLER_KEYWORDS
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +24,11 @@ def split_into_blocks(raw_markdown: str) -> list[str]:
     has_headers = any(line.strip().startswith("##") for line in lines)
 
     if not has_headers:
-        # Fallback: split by double newlines
+        # Fallback: split by double newlines then merge small blocks
+        # that belong to the same section (e.g. "Pardavėjas:" followed by company data)
         raw_blocks = re.split(r"\n{2,}", raw_markdown.strip())
-        return [b.strip() for b in raw_blocks if b.strip()]
+        raw_blocks = [b.strip() for b in raw_blocks if b.strip()]
+        return _merge_label_blocks(raw_blocks)
 
     in_table = False
     for line in lines:
@@ -75,6 +77,59 @@ def split_into_blocks(raw_markdown: str) -> list[str]:
     return blocks
 
 
+def _merge_label_blocks(blocks: list[str]) -> list[str]:
+    """Merge small blocks that follow section label blocks.
+
+    Handles patterns like:
+      Block: "Pardavėjas:"
+      Block: "Įmonės kodas 123..."
+      Block: "MB Company Name"
+    Merges into: "Pardavėjas:\nĮmonės kodas 123...\nMB Company Name"
+    """
+    if not blocks:
+        return blocks
+
+    section_labels = ENTITY_KEYWORDS
+
+    merged: list[str] = []
+    i = 0
+    while i < len(blocks):
+        block = blocks[i]
+        block_clean = re.sub(r"[*#:]+", "", block).strip().lower()
+
+        # Check if this is a section label (short block ending with : or matching keyword)
+        is_label = block_clean in section_labels or (
+            block_clean.rstrip(":") in section_labels
+        )
+
+        if is_label:
+            # Merge following blocks until next label or table
+            combined = [block]
+            i += 1
+            while i < len(blocks):
+                next_block = blocks[i]
+                next_clean = re.sub(r"[*#:]+", "", next_block).strip().lower()
+
+                # Stop merging at next section label, table, or keyword block
+                is_next_label = (
+                    next_clean.rstrip(":") in section_labels
+                    or next_block.strip().startswith("|")
+                    or re.match(r"^(?:pvm\s+sąskait|sąskait|invoice|pastab|mokėtina|iš viso|sąskaitą išrašė)", next_clean)
+                )
+                if is_next_label:
+                    break
+
+                combined.append(next_block)
+                i += 1
+
+            merged.append("\n".join(combined))
+        else:
+            merged.append(block)
+            i += 1
+
+    return merged
+
+
 def _score_block(block: str, section: str) -> int:
     """Score how well a block matches a section by keyword hits."""
     text = block.lower()
@@ -104,8 +159,8 @@ def _split_multi_column_blocks(blocks: list[str]) -> list[str]:
     Also handles blocks where metadata + seller/buyer are merged.
     """
     result: list[str] = []
-    seller_kw = {"seller", "pardavėjas", "tiekėjas", "supplier"}
-    buyer_kw = {"buyer", "pirkėjas", "gavėjas", "recipient", "customer"}
+    seller_kw = SELLER_KEYWORDS
+    buyer_kw = BUYER_KEYWORDS
 
     for block in blocks:
         lines = block.split("\n")
@@ -168,8 +223,8 @@ def _fix_merged_entity_blocks(blocks: list[str]) -> list[str]:
     """
     result: list[str] = []
     i = 0
-    seller_kw = {"seller", "pardavėjas", "tiekėjas"}
-    buyer_kw = {"buyer", "pirkėjas", "gavėjas"}
+    seller_kw = SELLER_KEYWORDS
+    buyer_kw = BUYER_KEYWORDS
 
     while i < len(blocks):
         block = blocks[i]
@@ -257,11 +312,7 @@ def classify_blocks(blocks: list[str]) -> list[tuple[str, str]]:
         # IBAN detection — but not if block is clearly seller/buyer
         if _has_iban(block):
             block_lower = re.sub(r"\*+", "", block).lower()
-            is_entity = any(
-                kw in block_lower
-                for kw in ["pardavėjas", "pirkėjas", "seller", "buyer",
-                            "tiekėjas", "gavėjas", "supplier", "customer"]
-            )
+            is_entity = any(kw in block_lower for kw in ENTITY_KEYWORDS)
             if not is_entity:
                 classified.append(("payment", block))
                 continue

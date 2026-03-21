@@ -2,8 +2,16 @@
 
 import re
 
+# --- Canonical entity keyword sets (single source of truth) ---
+SELLER_KEYWORDS: set[str] = {
+    "pardavėjas", "tiekėjas", "seller", "supplier", "vendor",
+}
+BUYER_KEYWORDS: set[str] = {
+    "pirkėjas", "gavėjas", "buyer", "recipient", "customer", "client",
+}
+ENTITY_KEYWORDS: set[str] = SELLER_KEYWORDS | BUYER_KEYWORDS
+
 # --- Section keyword mappings ---
-# Each key maps to a list of trigger phrases (lowercase) that indicate a section.
 
 SECTION_KEYWORDS: dict[str, list[str]] = {
     "metadata": [
@@ -216,11 +224,6 @@ BANK_CODE_RE = re.compile(
 CURRENCY_RE = re.compile(
     r"(?:valiuta|currency)[:\s]*([A-Z]{3})",
     re.IGNORECASE,
-)
-
-# Amounts
-AMOUNT_RE = re.compile(
-    r"(\d[\d\s]*[.,]\d{2})\s*(?:EUR|€|Eur|USD|\$|GBP|£)?",
 )
 
 # Total patterns
