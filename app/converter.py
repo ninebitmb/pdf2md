@@ -80,31 +80,42 @@ def _get_page_count(doc) -> int:
     return 1
 
 
-def _convert_pdf(pdf_path: str, ocr: bool = False) -> tuple[str, int]:
-    """Run Docling conversion. Returns (markdown, page_count)."""
+def _convert_doc(pdf_path: str, ocr: bool = False):
+    """Run Docling conversion. Returns DoclingDocument."""
     converter = _get_converter(ocr=ocr)
-    doc = converter.convert(pdf_path).document
-    return doc.export_to_markdown(), _get_page_count(doc)
+    return converter.convert(pdf_path).document
+
+
+def _has_real_content(md_text: str) -> bool:
+    """Check if markdown has real content (not just HTML comments)."""
+    stripped = md_text.strip() if md_text else ""
+    if not stripped:
+        return False
+    return not all(
+        line.strip().startswith("<!--") for line in stripped.split("\n") if line.strip()
+    )
 
 
 def extract_raw(pdf_path: str) -> tuple[str, int]:
-    """Extract markdown from PDF. Falls back to OCR if no text found.
+    """Extract column-aware markdown from PDF. Falls back to OCR if no text found.
 
+    Uses Docling's bbox data for multi-column detection.
     Returns (markdown, page_count).
     Raises EmptyExtractionError if OCR also yields nothing.
     """
-    md_text, page_count = _convert_pdf(pdf_path, ocr=False)
+    from app.markdown_builder import build_markdown
 
-    # Check if extraction has real content (not just HTML comments like <!-- image -->)
-    stripped = md_text.strip() if md_text else ""
-    has_content = bool(stripped) and not all(
-        line.strip().startswith("<!--") for line in stripped.split("\n") if line.strip()
-    )
-    if not has_content:
+    doc = _convert_doc(pdf_path, ocr=False)
+    page_count = _get_page_count(doc)
+    md_text = build_markdown(doc)
+
+    if not _has_real_content(md_text):
         logger.info("No text without OCR (%d pages), retrying with OCR", page_count)
-        md_text, page_count = _convert_pdf(pdf_path, ocr=True)
+        doc = _convert_doc(pdf_path, ocr=True)
+        page_count = _get_page_count(doc)
+        md_text = build_markdown(doc)
 
-    if not md_text or not md_text.strip():
+    if not _has_real_content(md_text):
         logger.warning("No text even with OCR (%d pages)", page_count)
         raise EmptyExtractionError(
             f"No text could be extracted from the PDF ({page_count} pages). "
