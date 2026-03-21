@@ -30,6 +30,8 @@ from app.patterns import (
     TOTAL_WITHOUT_VAT_RE,
     VAT_AMOUNT_RE,
     VAT_CODE_RE,
+    NON_NAME_PHRASES,
+    TABLE_HEADER_WORDS,
 )
 from app.section_classifier import classify_blocks, split_into_blocks
 from app.table_parser import extract_table_from_blocks
@@ -232,53 +234,72 @@ def _extract_metadata(text: str, data: InvoiceData) -> None:
             data.payment_term = normalize_date(m.group(1))
 
 
+_FIELD_KEYWORDS = {"kodas", "code", "vat", "pvm", "adresas", "address",
+                    "bankas", "bank", "iban", "swift", "tel", "fax", "email", "el. paštas"}
+_ADDRESS_HINT_RE = re.compile(
+    r"(?:g\.|gatvė|str\.|straße|street|road|avenue|alėja|pr\.\s|"
+    r"\d+[A-Za-z]?,\s*(?:LT-)?\d{4,5})", re.IGNORECASE,
+)
+
+
+def _is_company_name_candidate(line: str) -> bool:
+    """Check if a line looks like a plausible company name."""
+    s = _clean_field(line)
+    low = s.lower().strip(":").strip()
+    if not s or len(s) < 3 or len(s) > 120:
+        return False
+    # Reject markdown headers
+    if s.startswith("#"):
+        return False
+    # Reject section labels
+    if low in TABLE_HEADER_WORDS or low in NON_NAME_PHRASES:
+        return False
+    # Reject entity keywords themselves ("Seller", "Pardavėjas", "Pirkėjas:")
+    from app.patterns import ENTITY_KEYWORDS
+    if low in ENTITY_KEYWORDS:
+        return False
+    # Reject lines starting with known field keywords
+    first_word = low.split()[0] if low.split() else ""
+    if first_word in _FIELD_KEYWORDS or first_word in {"įmonės", "pvm", "mokėtina", "kasos", "visas"}:
+        return False
+    # Reject pure numbers
+    if re.match(r"^\d[\d\s.,]*$", s):
+        return False
+    # Reject pure addresses (no company legal form)
+    if _ADDRESS_HINT_RE.search(s) and not re.search(r"(?:UAB|MB|AB|VšĮ|IĮ|Ltd|GmbH|Inc|SIA|OÜ)\b", s, re.IGNORECASE):
+        return False
+    # Reject single common words
+    if len(s.split()) == 1 and low in {"įmonės", "pavadinimas", "data", "suma", "viso", "pastaba", "pastabos"}:
+        return False
+    return True
+
+
 def _extract_entity(text: str, entity: EntityInfo) -> None:
     """Extract company details into an EntityInfo object."""
     clean = _clean_field(text)
     lines = text.strip().split("\n")
+    cleaned_lines = [_clean_field(l) for l in lines]
 
-    # Try to extract name from "**Seller:** Name" inline format
+    # Phase 1: Try "**Keyword:** Name" inline format
     name = ""
-    role_keywords = [
-        "seller", "pardavėjas", "tiekėjas", "supplier", "vendor",
-        "buyer", "pirkėjas", "gavėjas", "recipient", "customer", "client",
-    ]
-    for kw in role_keywords:
+    from app.patterns import ENTITY_KEYWORDS as _entity_kw
+    for kw in _entity_kw:
         m = re.search(
             rf"\*{{0,2}}{re.escape(kw)}:?\*{{0,2}}[:\s]+(.+?)(?:\s+(?:CI|Invoice|No|Nr|Date|Kodas|Code|VAT|PVM)\b|$)",
             text, re.IGNORECASE,
         )
         if m:
-            name = _clean_field(m.group(1))
-            break
-
-    # Fallback: first meaningful line
-    if not name:
-        skip_phrases = [
-            "sąskaitą išrašė", "sąskaitą gavo", "sąskaita gavo",
-            "prekes priėmė", "prekių gavimo",
-            "issued by", "prepared by", "accepted by",
-            "e-parduotuvė", "e-store",
-        ]
-        for line in lines:
-            line_clean = _clean_field(line)
-            line_lower = line_clean.lower()
-            if any(kw in line_lower for kw in role_keywords):
-                if ":" in line_clean:
-                    after_colon = line_clean.split(":", 1)[1].strip()
-                    if after_colon and len(after_colon) > 2:
-                        name = after_colon
-                        break
-                continue
-            if not line_clean:
-                continue
-            if any(skip in line_lower for skip in skip_phrases):
-                continue
-            if any(kw in line_lower for kw in ["kodas", "code", "vat", "pvm", "adresas",
-                                               "address", "bankas", "bank", "iban", "swift"]):
+            candidate = _clean_field(m.group(1))
+            if _is_company_name_candidate(candidate):
+                name = candidate
                 break
-            name = line_clean
-            break
+
+    # Phase 2: Scan all lines for company name candidate (before AND after codes)
+    if not name:
+        for line_clean in cleaned_lines:
+            if _is_company_name_candidate(line_clean):
+                name = line_clean
+                break
 
     if name:
         entity.name = name
@@ -297,10 +318,8 @@ def _extract_entity(text: str, entity: EntityInfo) -> None:
     if m:
         entity.address = _clean_address(m.group(1))
     else:
-        for line in lines:
-            line_clean = _clean_field(line)
-            if re.search(r"(?:g\.|gatvė|str\.|straße|street|road|avenue|alėja|pr\.|"
-                         r"\d+[A-Za-z]?,\s*(?:LT-)?\d{4,5})", line_clean, re.IGNORECASE):
+        for line_clean in cleaned_lines:
+            if _ADDRESS_HINT_RE.search(line_clean):
                 addr = _clean_address(line_clean)
                 if len(addr) > 5:
                     entity.address = addr
@@ -346,10 +365,10 @@ def _extract_entity_from_full_text(text: str, entity: EntityInfo, role: str) -> 
             text, re.IGNORECASE,
         )
         if m:
-            name = _clean_field(m.group(1))
-            if name and len(name) >= 3:
-                entity.name = name
-                logger.debug("Entity %s name (fallback): %s", role, name)
+            candidate = _clean_field(m.group(1))
+            if _is_company_name_candidate(candidate):
+                entity.name = candidate
+                logger.debug("Entity %s name (fallback): %s", role, candidate)
                 break
 
     # Also try to extract code/vat from full text if entity name found but codes missing

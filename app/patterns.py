@@ -11,6 +11,24 @@ BUYER_KEYWORDS: set[str] = {
 }
 ENTITY_KEYWORDS: set[str] = SELLER_KEYWORDS | BUYER_KEYWORDS
 
+# Words that are table headers, not company names
+TABLE_HEADER_WORDS: set[str] = {
+    "pavadinimas", "aprašymas", "kiekis", "kaina", "suma", "vnt", "vnt.",
+    "nr", "nr.", "eil. nr.", "mat. vnt.", "mato vnt.",
+    "description", "quantity", "price", "amount", "unit", "total",
+    "prekė", "paslauga", "subtotal", "item", "service",
+}
+
+# Phrases that are NOT company names (common invoice text)
+NON_NAME_PHRASES: set[str] = {
+    "apmokėjimas pavedimu", "apmokėjimas pavedimu.",
+    "sąskaitą išrašė", "sąskaitą gavo", "sąskaita gavo",
+    "prekes priėmė", "prekių gavimo",
+    "issued by", "prepared by", "accepted by",
+    "e-parduotuvė", "e-store",
+    "sąskaita galioja be parašo", "sąskaita galioja be parašo.",
+}
+
 # --- Section keyword mappings ---
 
 SECTION_KEYWORDS: dict[str, list[str]] = {

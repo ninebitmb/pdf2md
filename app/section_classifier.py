@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 
-from app.patterns import BUYER_KEYWORDS, ENTITY_KEYWORDS, IBAN_RE, SECTION_KEYWORDS, SELLER_KEYWORDS
+from app.patterns import BUYER_KEYWORDS, ENTITY_KEYWORDS, IBAN_RE, SECTION_KEYWORDS, SELLER_KEYWORDS, TABLE_HEADER_WORDS
 
 logger = logging.getLogger(__name__)
 
@@ -110,10 +110,12 @@ def _merge_label_blocks(blocks: list[str]) -> list[str]:
                 next_block = blocks[i]
                 next_clean = re.sub(r"[*#:]+", "", next_block).strip().lower()
 
-                # Stop merging at next section label, table, or keyword block
+                # Stop merging at next section label, table, table header, or keyword block
+                first_word = next_clean.split()[0] if next_clean.split() else ""
                 is_next_label = (
                     next_clean.rstrip(":") in section_labels
                     or next_block.strip().startswith("|")
+                    or first_word in TABLE_HEADER_WORDS
                     or re.match(r"^(?:pvm\s+sąskait|sąskait|invoice|pastab|mokėtina|iš viso|sąskaitą išrašė)", next_clean)
                 )
                 if is_next_label:
