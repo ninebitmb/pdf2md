@@ -111,13 +111,13 @@ def extract_raw(pdf_path: str) -> tuple[str, int, dict]:
 
     doc = _convert_doc(pdf_path, ocr=False)
     page_count = _get_page_count(doc)
-    md_text = build_markdown(doc)
+    md_text = build_markdown(doc, pdf_path)
 
     if not _has_real_content(md_text):
         logger.info("No text without OCR (%d pages), retrying with OCR", page_count)
         doc = _convert_doc(pdf_path, ocr=True)
         page_count = _get_page_count(doc)
-        md_text = build_markdown(doc)
+        md_text = build_markdown(doc, pdf_path)
 
     if not _has_real_content(md_text):
         logger.warning("No text even with OCR (%d pages)", page_count)

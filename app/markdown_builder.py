@@ -1,13 +1,14 @@
-"""Build column-aware markdown from Docling's rich document model.
+"""Build column-aware markdown from PDF using pdfplumber for text and Docling for tables.
 
-Instead of export_to_markdown() which merges multi-column layouts,
-this uses element bounding boxes to detect columns and produce
-correctly ordered markdown.
+pdfplumber provides more accurate text extraction with precise word positions,
+while Docling excels at table structure detection. This hybrid approach
+ensures no text elements are lost (especially horizontally positioned blocks).
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
+import pdfplumber
 from docling_core.types.doc.document import DoclingDocument
 
 logger = logging.getLogger(__name__)
@@ -18,19 +19,29 @@ class _Element:
     """A positioned text or table element."""
     text: str
     x: float
-    y: float
+    y: float  # pdfplumber top-down coordinate (distance from page top)
     width: float
     label: str
     is_table: bool = False
 
 
-def build_markdown(doc: DoclingDocument) -> str:
-    """Build markdown from DoclingDocument with column-aware layout detection.
+@dataclass
+class _TableRegion:
+    """A table region from Docling with bounding box in pdfplumber coords."""
+    page_no: int
+    top: float
+    bottom: float
+    markdown: str
 
-    Detects multi-column layouts (e.g. seller | buyer side by side)
-    and outputs them sequentially instead of interleaved.
+
+def build_markdown(doc: DoclingDocument, pdf_path: str) -> str:
+    """Build markdown from PDF with column-aware layout detection.
+
+    Uses pdfplumber for text extraction (more complete than Docling for
+    horizontally spread text blocks) and Docling for table structure.
     """
-    pages = _extract_elements_by_page(doc)
+    table_regions = _get_table_regions(doc)
+    pages = _extract_elements_by_page(pdf_path, table_regions)
     sections: list[str] = []
 
     for page_no in sorted(pages.keys()):
@@ -38,7 +49,7 @@ def build_markdown(doc: DoclingDocument) -> str:
         if not elements:
             continue
 
-        page_width = _get_page_width(doc, page_no)
+        page_width = _get_page_width_pdfplumber(pdf_path, page_no)
         columns = _detect_columns(elements, page_width)
 
         if len(columns) > 1:
@@ -52,7 +63,6 @@ def build_markdown(doc: DoclingDocument) -> str:
             if md.strip():
                 sections.append(md)
 
-    # Also export tables using Docling's own table markdown (more accurate)
     result = "\n\n".join(sections)
 
     # Append tables from Docling's structured table data
@@ -61,45 +71,111 @@ def build_markdown(doc: DoclingDocument) -> str:
         if table_md and table_md.strip():
             result += "\n\n" + table_md
 
-    return result.strip()
+    return _normalize_quotes(result.strip())
 
 
-def _extract_elements_by_page(doc: DoclingDocument) -> dict[int, list[_Element]]:
-    """Extract all text elements with positions, grouped by page."""
-    pages: dict[int, list[_Element]] = {}
+def _normalize_quotes(text: str) -> str:
+    """Replace typographic quotes with standard ASCII double quotes."""
+    for ch in "„""\u201e\u201c\u201d\u00ab\u00bb":
+        text = text.replace(ch, '"')
+    return text
 
-    for item, level in doc.iterate_items():
-        if not hasattr(item, "prov") or not item.prov:
+
+def _get_table_regions(doc: DoclingDocument) -> list[_TableRegion]:
+    """Extract table bounding boxes from Docling, converted to pdfplumber coords."""
+    regions = []
+
+    page_heights: dict[int, float] = {}
+    if doc.pages:
+        for page_no, page in doc.pages.items():
+            if hasattr(page, "size") and page.size:
+                page_heights[page_no] = page.size.height
+
+    for table in doc.tables:
+        if not table.prov:
             continue
-
-        prov = item.prov[0]
+        prov = table.prov[0]
         bbox = prov.bbox
         page_no = prov.page_no
+        page_height = page_heights.get(page_no, 841.89)
 
-        if hasattr(item, "text") and item.text:
-            label = str(getattr(item, "label", "text"))
-            el = _Element(
-                text=item.text.strip(),
-                x=bbox.l,
-                y=bbox.t,
-                width=bbox.r - bbox.l,
-                label=label,
-            )
-            pages.setdefault(page_no, []).append(el)
+        # Convert Docling coords (y bottom-up) to pdfplumber (y top-down)
+        top = page_height - bbox.t
+        bottom = page_height - bbox.b
 
-    # Sort elements by Y position (top to bottom), then X (left to right)
-    for page_no in pages:
-        pages[page_no].sort(key=lambda e: (-e.y, e.x))  # -y because PDF coords are bottom-up
+        md = table.export_to_markdown(doc)
+        if md and md.strip():
+            regions.append(_TableRegion(
+                page_no=page_no,
+                top=top,
+                bottom=bottom,
+                markdown=md.strip(),
+            ))
+
+    return regions
+
+
+def _is_in_table(top: float, page_no: int, table_regions: list[_TableRegion], margin: float = 2.0) -> bool:
+    """Check if a y position falls within any table region."""
+    for tr in table_regions:
+        if tr.page_no == page_no and (tr.top - margin) <= top <= (tr.bottom + margin):
+            return True
+    return False
+
+
+def _extract_elements_by_page(
+    pdf_path: str,
+    table_regions: list[_TableRegion],
+) -> dict[int, list[_Element]]:
+    """Extract text elements with positions using pdfplumber, grouped by page.
+
+    Words inside Docling-detected table regions are excluded since tables
+    are rendered separately using Docling's structured table markdown.
+    """
+    pages: dict[int, list[_Element]] = {}
+
+    with pdfplumber.open(pdf_path) as pdf:
+        for page_idx, page in enumerate(pdf.pages):
+            page_no = page_idx + 1
+            words = page.extract_words()
+            if not words:
+                continue
+
+            # Detect median font size for heading detection
+            heights = [w["height"] for w in words]
+            median_h = sorted(heights)[len(heights) // 2] if heights else 10.0
+
+            elements: list[_Element] = []
+            for w in words:
+                top = w["top"]
+
+                # Skip words inside table bounding boxes
+                if _is_in_table(top, page_no, table_regions):
+                    continue
+
+                is_heading = w["height"] > median_h * 1.3
+                label = "section_header" if is_heading else "text"
+
+                elements.append(_Element(
+                    text=w["text"],
+                    x=w["x0"],
+                    y=top,
+                    width=w["x1"] - w["x0"],
+                    label=label,
+                ))
+
+            if elements:
+                elements.sort(key=lambda e: (e.y, e.x))
+                pages[page_no] = elements
 
     return pages
 
 
-def _get_page_width(doc: DoclingDocument, page_no: int) -> float:
-    """Get page width from document metadata."""
-    if doc.pages and page_no in doc.pages:
-        page = doc.pages[page_no]
-        if hasattr(page, "size") and page.size:
-            return page.size.width
+def _get_page_width_pdfplumber(pdf_path: str, page_no: int) -> float:
+    """Get page width from pdfplumber."""
+    with pdfplumber.open(pdf_path) as pdf:
+        if page_no <= len(pdf.pages):
+            return pdf.pages[page_no - 1].width
     return 595.0  # A4 default
 
 
@@ -119,7 +195,6 @@ def _detect_columns(elements: list[_Element], page_width: float) -> list[list[_E
         y_groups.setdefault(y_key, []).append(e)
 
     # Count how many lines have wide-spread elements (potential columns)
-    # vs narrow key-value pairs
     wide_lines = 0
     narrow_lines = 0
     for group in y_groups.values():
@@ -183,7 +258,7 @@ def _detect_columns(elements: list[_Element], page_width: float) -> list[list[_E
 def _elements_to_markdown(elements: list[_Element]) -> str:
     """Convert positioned elements to markdown text.
 
-    Merges elements on the same Y line into single lines (label: value pairs).
+    Merges elements on the same Y line into single lines.
     """
     # Group elements by Y position (within 3px tolerance)
     y_groups: list[list[_Element]] = []
@@ -207,20 +282,14 @@ def _elements_to_markdown(elements: list[_Element]) -> str:
         # Sort by X within the same line
         group.sort(key=lambda e: e.x)
 
+        text = " ".join(e.text for e in group)
+
         # Check for heading
         if any(e.label in ("section_header", "title") for e in group):
-            text = " ".join(e.text for e in group)
             lines.append(f"## {text}")
         elif any(e.label == "page_header" for e in group):
-            text = " ".join(e.text for e in group)
             lines.append(f"# {text}")
-        elif len(group) == 2:
-            # Likely label: value pair
-            lines.append(f"{group[0].text} {group[1].text}")
-        elif len(group) > 2:
-            # Multiple elements on same line
-            lines.append(" ".join(e.text for e in group))
         else:
-            lines.append(group[0].text)
+            lines.append(text)
 
     return "\n".join(lines)

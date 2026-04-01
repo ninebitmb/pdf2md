@@ -8,5 +8,6 @@ dependencies = [
     "python-multipart",
     "docling",
     "easyocr",
+    "pdfplumber",
     "prometheus-client",
 ]
