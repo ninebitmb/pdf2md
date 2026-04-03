@@ -6,6 +6,7 @@ ensures no text elements are lost (especially horizontally positioned blocks).
 """
 
 import logging
+import re
 from dataclasses import dataclass
 
 import pdfplumber
@@ -137,7 +138,14 @@ def _extract_elements_by_page(
     with pdfplumber.open(pdf_path) as pdf:
         for page_idx, page in enumerate(pdf.pages):
             page_no = page_idx + 1
-            words = page.extract_words()
+            # Use smaller x_tolerance to avoid merging separate words
+            # that are close but should remain distinct
+            words = page.extract_words(
+                x_tolerance=1,  # Tighter than default (3) to prevent word merging
+                y_tolerance=3,
+                keep_blank_chars=True,
+                extra_attrs=["x0", "x1", "top", "bottom", "height"],
+            )
             if not words:
                 continue
 
@@ -258,7 +266,8 @@ def _detect_columns(elements: list[_Element], page_width: float) -> list[list[_E
 def _elements_to_markdown(elements: list[_Element]) -> str:
     """Convert positioned elements to markdown text.
 
-    Merges elements on the same Y line into single lines.
+    Merges elements on the same Y line into single lines, using
+    bounding box gaps to determine spacing between words.
     """
     # Group elements by Y position (within 3px tolerance)
     y_groups: list[list[_Element]] = []
@@ -282,7 +291,7 @@ def _elements_to_markdown(elements: list[_Element]) -> str:
         # Sort by X within the same line
         group.sort(key=lambda e: e.x)
 
-        text = " ".join(e.text for e in group)
+        text = _join_elements_with_spacing(group)
 
         # Check for heading
         if any(e.label in ("section_header", "title") for e in group):
@@ -292,4 +301,61 @@ def _elements_to_markdown(elements: list[_Element]) -> str:
         else:
             lines.append(text)
 
-    return "\n".join(lines)
+    result = "\n".join(lines)
+    return _fix_concatenated_text(result)
+
+
+def _join_elements_with_spacing(elements: list[_Element]) -> str:
+    """Join elements using bounding box gaps to determine spacing.
+
+    If two adjacent elements have a visible gap between them (> avg char width),
+    insert a space. Otherwise join directly (they are part of the same word).
+    """
+    if not elements:
+        return ""
+    if len(elements) == 1:
+        return elements[0].text
+
+    parts: list[str] = [elements[0].text]
+
+    for i in range(1, len(elements)):
+        prev = elements[i - 1]
+        curr = elements[i]
+
+        # Calculate gap between end of previous element and start of current
+        prev_end = prev.x + prev.width
+        gap = curr.x - prev_end
+
+        # Estimate average character width from previous element
+        avg_char_w = prev.width / max(len(prev.text), 1)
+
+        # If gap is larger than ~0.3 of a character width, add space
+        if gap > avg_char_w * 0.3:
+            parts.append(" ")
+        # If elements are overlapping or touching, no space needed
+        # (they're part of the same word or adjacent characters)
+
+        parts.append(curr.text)
+
+    return "".join(parts)
+
+
+def _fix_concatenated_text(text: str) -> str:
+    """Post-process to fix common concatenation artifacts from PDF extraction.
+
+    Some PDFs encode text without proper inter-word spacing. This function
+    uses heuristics to insert spaces where they're likely missing.
+    """
+    # Fix lowercase followed immediately by uppercase (e.g., "TeliaLietuva" → "Telia Lietuva")
+    text = re.sub(r'([a-ząčęėįšųūž])([A-ZĄČĘĖĮŠŲŪŽ])', r'\1 \2', text)
+
+    # Fix letter immediately before a digit with no space (e.g., "kodas307128023" → "kodas 307128023")
+    text = re.sub(r'([a-ząčęėįšųūžA-ZĄČĘĖĮŠŲŪŽ])(\d{5,})', r'\1 \2', text)
+
+    # Fix digit immediately before a letter (e.g., "47483Kaunas" → "47483 Kaunas")
+    text = re.sub(r'(\d{3,})([A-ZĄČĘĖĮŠŲŪŽ][a-ząčęėįšųūž])', r'\1 \2', text)
+
+    # Fix comma/period followed by uppercase with no space (e.g., ",AB" → ", AB")
+    text = re.sub(r'([,])([A-ZĄČĘĖĮŠŲŪŽ])', r'\1 \2', text)
+
+    return text
