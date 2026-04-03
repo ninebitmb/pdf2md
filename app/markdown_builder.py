@@ -341,29 +341,17 @@ def _join_elements_with_spacing(elements: list[_Element]) -> str:
 
 
 def _fix_concatenated_text(text: str) -> str:
-    """Post-process to fix common concatenation artifacts from PDF extraction.
+    """Light post-processing for common concatenation artifacts from PDF extraction.
 
-    Some PDFs encode text without proper inter-word spacing. This function
-    uses heuristics to insert spaces where they're likely missing.
+    Only applies minimal, safe fixes. Most extraction quality comes from
+    the bounding-box-aware spacing in _join_elements_with_spacing().
+    Heavy regex manipulation is avoided — for best results, use Gemini
+    multimodal mode which reads the PDF layout directly.
     """
     # Fix lowercase followed immediately by uppercase (e.g., "TeliaLietuva" → "Telia Lietuva")
     text = re.sub(r'([a-ząčęėįšųūž])([A-ZĄČĘĖĮŠŲŪŽ])', r'\1 \2', text)
 
-    # Fix letter immediately before a digit with no space (e.g., "kodas307128023" → "kodas 307128023")
-    text = re.sub(r'([a-ząčęėįšųūžA-ZĄČĘĖĮŠŲŪŽ])(\d{5,})', r'\1 \2', text)
-
-    # Fix digit immediately before a letter (e.g., "47483Kaunas" → "47483 Kaunas", "YC43Ireland" → "YC43 Ireland")
-    text = re.sub(r'(\d{2,})([A-ZĄČĘĖĮŠŲŪŽ][a-ząčęėįšųūž])', r'\1 \2', text)
-
-    # Fix comma/period followed by uppercase with no space (e.g., ",AB" → ", AB")
+    # Fix comma followed by uppercase with no space (e.g., ",AB" → ", AB")
     text = re.sub(r'([,])([A-ZĄČĘĖĮŠŲŪŽ])', r'\1 \2', text)
-
-    # Fix word ending immediately followed by uppercase word (e.g., "UpperDublin" → "Upper Dublin")
-    # Already handled by lowercase→uppercase rule above, but also catch abbreviation patterns
-    text = re.sub(r'([a-ząčęėįšųūž]{2})(\d[A-ZĄČĘĖĮŠŲŪŽ])', r'\1 \2', text)
-
-    # Restore hyphens in document numbers: "11400A5A 0002" → "11400A5A-0002"
-    # Pattern: alphanumeric ID followed by space and a sequence number (4+ digits)
-    text = re.sub(r'([A-Z0-9]{6,}) (\d{4,})\b', r'\1-\2', text)
 
     return text
