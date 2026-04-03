@@ -352,10 +352,14 @@ def _fix_concatenated_text(text: str) -> str:
     # Fix letter immediately before a digit with no space (e.g., "kodas307128023" → "kodas 307128023")
     text = re.sub(r'([a-ząčęėįšųūžA-ZĄČĘĖĮŠŲŪŽ])(\d{5,})', r'\1 \2', text)
 
-    # Fix digit immediately before a letter (e.g., "47483Kaunas" → "47483 Kaunas")
-    text = re.sub(r'(\d{3,})([A-ZĄČĘĖĮŠŲŪŽ][a-ząčęėįšųūž])', r'\1 \2', text)
+    # Fix digit immediately before a letter (e.g., "47483Kaunas" → "47483 Kaunas", "YC43Ireland" → "YC43 Ireland")
+    text = re.sub(r'(\d{2,})([A-ZĄČĘĖĮŠŲŪŽ][a-ząčęėįšųūž])', r'\1 \2', text)
 
     # Fix comma/period followed by uppercase with no space (e.g., ",AB" → ", AB")
     text = re.sub(r'([,])([A-ZĄČĘĖĮŠŲŪŽ])', r'\1 \2', text)
+
+    # Fix word ending immediately followed by uppercase word (e.g., "UpperDublin" → "Upper Dublin")
+    # Already handled by lowercase→uppercase rule above, but also catch abbreviation patterns
+    text = re.sub(r'([a-ząčęėįšųūž]{2})(\d[A-ZĄČĘĖĮŠŲŪŽ])', r'\1 \2', text)
 
     return text
