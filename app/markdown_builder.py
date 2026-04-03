@@ -362,4 +362,8 @@ def _fix_concatenated_text(text: str) -> str:
     # Already handled by lowercase→uppercase rule above, but also catch abbreviation patterns
     text = re.sub(r'([a-ząčęėįšųūž]{2})(\d[A-ZĄČĘĖĮŠŲŪŽ])', r'\1 \2', text)
 
+    # Restore hyphens in document numbers: "11400A5A 0002" → "11400A5A-0002"
+    # Pattern: alphanumeric ID followed by space and a sequence number (4+ digits)
+    text = re.sub(r'([A-Z0-9]{6,}) (\d{4,})\b', r'\1-\2', text)
+
     return text
