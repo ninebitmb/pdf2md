@@ -11,3 +11,8 @@ dependencies = [
     "pdfplumber",
     "prometheus-client",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff",
+]
