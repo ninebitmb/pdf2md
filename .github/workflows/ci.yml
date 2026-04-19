@@ -125,4 +125,7 @@ jobs:
           code=$(echo "$resp" | tail -1)
           body=$(echo "$resp" | sed '$d')
           echo "HTTP $code: $body"
-          [ "$code" -ge 400 ] && { echo "::error::deploy failed"; exit 1; }
+          if [ "$code" -ge 400 ]; then
+            echo "::error::deploy failed"
+            exit 1
+          fi
