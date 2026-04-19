@@ -40,6 +40,7 @@ jobs:
     outputs:
       immutable: ${{ steps.tags.outputs.immutable }}
       floating: ${{ steps.tags.outputs.floating }}
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v4
@@ -55,6 +56,7 @@ jobs:
           echo "floating=latest" >> "$GITHUB_OUTPUT"
           echo "immutable=main-${SHA_SHORT}" >> "$GITHUB_OUTPUT"
       - name: Build and push production image
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -78,6 +80,21 @@ jobs:
             ${{ env.IMAGE }}:${{ steps.tags.outputs.immutable }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/pdf2md-converter/cache:prod
           cache-to: type=registry,ref=${{ env.REGISTRY }}/pdf2md-converter/cache:prod,mode=max
+
+  sign:
+    runs-on: [self-hosted, ninebit]
+    needs: [build]
+    env:
+      DIGEST: ${{ needs.build.outputs.digest }}
+      REGISTRY_USER: ${{ secrets.ZOT_USERNAME }}
+      REGISTRY_PASS: ${{ secrets.ZOT_PASSWORD }}
+    steps:
+      - uses: sigstore/cosign-installer@v3
+      - name: Keyless sign image via GH OIDC → Fulcio
+        run: |
+          set -euo pipefail
+          echo "$REGISTRY_PASS" | cosign login "${{ env.REGISTRY }}" -u "$REGISTRY_USER" --password-stdin
+          cosign sign --yes "${{ env.IMAGE }}@${DIGEST}"
 
   cve-scan:
     runs-on: [self-hosted, ninebit]
