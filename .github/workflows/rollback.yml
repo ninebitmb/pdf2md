@@ -1,0 +1,77 @@
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Immutable image tag to roll back to (e.g. main-abc1234)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify-tag-exists:
+    runs-on: [self-hosted, ninebit]
+    env:
+      TAG: ${{ inputs.target }}
+    steps:
+      - name: Confirm image exists in zot
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o /dev/null -w "%{http_code}" \
+            -u "${{ secrets.ZOT_USERNAME }}:${{ secrets.ZOT_PASSWORD }}" \
+            -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
+            "https://zot.ninebit.lt/v2/pdf2md-converter/converter/manifests/${TAG}")
+          if [ "$code" -ne 200 ]; then
+            echo "::error::pdf2md-converter/converter:${TAG} not found in zot"
+            exit 1
+          fi
+
+  verify-signature:
+    runs-on: [self-hosted, ninebit]
+    needs: [verify-tag-exists]
+    steps:
+      - uses: sigstore/cosign-installer@v3
+      - name: Verify cosign signature
+        env:
+          TAG: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          DIGEST=$(curl -sI -u "${{ secrets.ZOT_USERNAME }}:${{ secrets.ZOT_PASSWORD }}" \
+            -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
+            "https://zot.ninebit.lt/v2/pdf2md-converter/converter/manifests/${TAG}" \
+            | grep -i '^docker-content-digest:' | awk '{print $2}' | tr -d '\r')
+          cosign verify \
+            --certificate-identity-regexp "https://github.com/ninebitmb/pdf2md/.*" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "zot.ninebit.lt/pdf2md-converter/converter@${DIGEST}" | head -5
+
+  redeploy:
+    runs-on: [self-hosted, ninebit]
+    needs: [verify-signature]
+    env:
+      TAG: ${{ inputs.target }}
+      APP_ID: ${{ secrets.DOKPLOY_APP_ID }}
+      API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
+      IMAGE_BASE: zot.ninebit.lt/pdf2md-converter/converter
+    steps:
+      - name: Pin dockerImage + deploy
+        run: |
+          set -euo pipefail
+          FULL="${IMAGE_BASE}:${TAG}"
+          curl -sS -X POST "https://dokploy.ninebit.lt/api/application.update" \
+            -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
+            -d "{\"applicationId\":\"$APP_ID\",\"dockerImage\":\"$FULL\"}" >/dev/null
+          resp=$(curl -sS -w "\n%{http_code}" -X POST \
+            "https://dokploy.ninebit.lt/api/application.deploy" \
+            -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
+            -d "{\"applicationId\":\"$APP_ID\"}")
+          code=$(echo "$resp" | tail -1)
+          body=$(echo "$resp" | sed '$d')
+          echo "HTTP $code: $body"
+          if [ "$code" -ge 400 ]; then
+            echo "::error::redeploy failed"
+            exit 1
+          fi
