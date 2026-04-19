@@ -6,9 +6,14 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+  id-token: write
+
 env:
   REGISTRY: zot.ninebit.lt
   IMAGE: zot.ninebit.lt/pdf2md-converter/converter
+  BASE_IMAGE: zot.ninebit.lt/ninebit/python-ml:3.12
 
 jobs:
   lint:
@@ -32,46 +37,92 @@ jobs:
     runs-on: [self-hosted, ninebit]
     needs: [test]
     if: success() && github.ref == 'refs/heads/main' && github.event_name == 'push'
+    outputs:
+      immutable: ${{ steps.tags.outputs.immutable }}
+      floating: ${{ steps.tags.outputs.floating }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: docker/setup-buildx-action@v4
-
       - uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.ZOT_USERNAME }}
           password: ${{ secrets.ZOT_PASSWORD }}
-
-      - name: Build and push
+      - name: Compute tags
+        id: tags
+        run: |
+          SHA_SHORT="${GITHUB_SHA::7}"
+          echo "floating=latest" >> "$GITHUB_OUTPUT"
+          echo "immutable=main-${SHA_SHORT}" >> "$GITHUB_OUTPUT"
+      - name: Build and push production image
         uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
           push: true
+          provenance: mode=max
+          sbom: true
+          build-args: |
+            BASE_IMAGE=${{ env.BASE_IMAGE }}
+            GIT_SHA=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+            org.opencontainers.image.url=https://pdf2md.ninebit.lt
+            org.opencontainers.image.licenses=proprietary
+            org.opencontainers.image.title=pdf2md-converter
           tags: |
-            ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:main-${{ github.sha }}
+            ${{ env.IMAGE }}:${{ steps.tags.outputs.floating }}
+            ${{ env.IMAGE }}:${{ steps.tags.outputs.immutable }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/pdf2md-converter/cache:prod
           cache-to: type=registry,ref=${{ env.REGISTRY }}/pdf2md-converter/cache:prod,mode=max
 
-  deploy:
+  cve-scan:
     runs-on: [self-hosted, ninebit]
     needs: [build]
+    env:
+      TAG: ${{ needs.build.outputs.immutable }}
+      ZOT_USERNAME: ${{ secrets.ZOT_USERNAME }}
+      ZOT_PASSWORD: ${{ secrets.ZOT_PASSWORD }}
     steps:
-      - name: Deploy to Dokploy
+      - name: Query zot Trivy CVE summary
         run: |
-          response=$(curl -s -w "\n%{http_code}" -X POST \
-            "https://dokploy.ninebit.lt/api/application.deploy" \
-            -H "x-api-key: ${{ secrets.DOKPLOY_API_KEY }}" \
-            -H "Content-Type: application/json" \
-            -d '{"applicationId": "${{ secrets.DOKPLOY_APP_ID }}"}')
-
-          http_code=$(echo "$response" | tail -1)
-          body=$(echo "$response" | sed '$d')
-          echo "HTTP: ${http_code} ${body}"
-
-          if [ "$http_code" -ge 400 ]; then
-            echo "::error::Dokploy deployment failed"
-            exit 1
+          set -euo pipefail
+          sleep 20
+          QUERY="{\"query\":\"{ CVEListForImage(image: \\\"pdf2md-converter/converter:${TAG}\\\") { Summary { Count CriticalCount HighCount MediumCount LowCount UnknownCount MaxSeverity } } }\"}"
+          RESP=$(curl -sS -u "$ZOT_USERNAME:$ZOT_PASSWORD" \
+            "https://${{ env.REGISTRY }}/v2/_zot/ext/search" \
+            -H 'Content-Type: application/json' \
+            -d "$QUERY")
+          echo "$RESP" | jq .
+          CRIT=$(echo "$RESP" | jq '.data.CVEListForImage.Summary.CriticalCount // 0')
+          if [ "$CRIT" -gt 0 ]; then
+            echo "::warning::$CRIT critical CVE(s) in pdf2md-converter/converter:${TAG}"
           fi
+
+  deploy:
+    runs-on: [self-hosted, ninebit]
+    needs: [build, cve-scan]
+    env:
+      TAG: ${{ needs.build.outputs.immutable }}
+      APP_ID: ${{ secrets.DOKPLOY_APP_ID }}
+      API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
+      IMAGE_BASE: zot.ninebit.lt/pdf2md-converter/converter
+    steps:
+      - name: Pin application.dockerImage + deploy
+        run: |
+          set -euo pipefail
+          FULL="${IMAGE_BASE}:${TAG}"
+          curl -sS -X POST "https://dokploy.ninebit.lt/api/application.update" \
+            -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
+            -d "{\"applicationId\":\"$APP_ID\",\"dockerImage\":\"$FULL\"}" >/dev/null
+          resp=$(curl -sS -w "\n%{http_code}" -X POST \
+            "https://dokploy.ninebit.lt/api/application.deploy" \
+            -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
+            -d "{\"applicationId\":\"$APP_ID\"}")
+          code=$(echo "$resp" | tail -1)
+          body=$(echo "$resp" | sed '$d')
+          echo "HTTP $code: $body"
+          [ "$code" -ge 400 ] && { echo "::error::deploy failed"; exit 1; }

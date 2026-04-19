@@ -1,4 +1,17 @@
-FROM zot.ninebit.lt/ninebit/python-ml:3.12
+ARG BASE_IMAGE=zot.ninebit.lt/ninebit/python-ml:3.12
+FROM ${BASE_IMAGE}
+
+ARG GIT_SHA=unknown
+ARG BUILD_DATE=unknown
+
+LABEL org.opencontainers.image.title="pdf2md-converter" \
+      org.opencontainers.image.source="https://github.com/ninebitmb/pdf2md" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.url="https://pdf2md.ninebit.lt" \
+      org.opencontainers.image.licenses="proprietary"
+
+ENV APP_REVISION=${GIT_SHA}
 
 WORKDIR /app
 
