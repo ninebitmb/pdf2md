@@ -1,4 +1,4 @@
-FROM harbor.ninebit.lt/ninebit/python-ml:3.12
+FROM zot.ninebit.lt/ninebit/python-ml:3.12
 
 WORKDIR /app
 

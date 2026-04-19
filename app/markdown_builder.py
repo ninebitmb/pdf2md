@@ -40,15 +40,26 @@ def build_markdown(doc: DoclingDocument, pdf_path: str) -> str:
 
     Uses pdfplumber for text extraction (more complete than Docling for
     horizontally spread text blocks) and Docling for table structure.
+    Tables are inserted at their natural Y position in the document flow.
     """
     table_regions = _get_table_regions(doc)
     pages = _extract_elements_by_page(pdf_path, table_regions)
-    sections: list[str] = []
+    all_sections: list[str] = []
 
     for page_no in sorted(pages.keys()):
         elements = pages[page_no]
         if not elements:
+            # Even with no text, there might be tables on this page
+            page_tables = [tr for tr in table_regions if tr.page_no == page_no]
+            for tr in sorted(page_tables, key=lambda t: t.top):
+                all_sections.append(tr.markdown)
             continue
+
+        # Collect tables for this page, sorted by Y position
+        page_tables = sorted(
+            [tr for tr in table_regions if tr.page_no == page_no],
+            key=lambda t: t.top,
+        )
 
         page_width = _get_page_width_pdfplumber(pdf_path, page_no)
         columns = _detect_columns(elements, page_width)
@@ -58,21 +69,56 @@ def build_markdown(doc: DoclingDocument, pdf_path: str) -> str:
             for col_elements in columns:
                 md = _elements_to_markdown(col_elements)
                 if md.strip():
-                    sections.append(md)
+                    all_sections.append(md)
+            # Insert tables after column content (position is approximate)
+            for tr in page_tables:
+                all_sections.append(tr.markdown)
         else:
-            md = _elements_to_markdown(elements)
-            if md.strip():
-                sections.append(md)
+            # Split text elements at table positions for interleaving
+            _interleave_text_and_tables(elements, page_tables, page_width, all_sections)
 
-    result = "\n\n".join(sections)
+    return _normalize_quotes("\n\n".join(all_sections).strip())
 
-    # Append tables from Docling's structured table data
-    for table in doc.tables:
-        table_md = table.export_to_markdown(doc)
-        if table_md and table_md.strip():
-            result += "\n\n" + table_md
 
-    return _normalize_quotes(result.strip())
+def _interleave_text_and_tables(
+    elements: list[_Element],
+    tables: list[_TableRegion],
+    page_width: float,
+    out: list[str],
+) -> None:
+    """Interleave text blocks and tables in their natural Y order."""
+    if not tables:
+        md = _elements_to_markdown(elements)
+        if md.strip():
+            out.append(md)
+        return
+
+    table_idx = 0
+    current_elements: list[_Element] = []
+
+    for el in elements:
+        # Check if we passed a table's Y position
+        while table_idx < len(tables) and el.y > tables[table_idx].top:
+            if current_elements:
+                md = _elements_to_markdown(current_elements)
+                if md.strip():
+                    out.append(md)
+                current_elements = []
+            out.append(tables[table_idx].markdown)
+            table_idx += 1
+
+        current_elements.append(el)
+
+    # Flush remaining text
+    if current_elements:
+        md = _elements_to_markdown(current_elements)
+        if md.strip():
+            out.append(md)
+
+    # Flush remaining tables
+    while table_idx < len(tables):
+        out.append(tables[table_idx].markdown)
+        table_idx += 1
 
 
 def _normalize_quotes(text: str) -> str:

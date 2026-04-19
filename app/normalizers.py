@@ -36,9 +36,12 @@ def normalize_amount(raw: str) -> str:
             s = s.replace(",", "")
     elif has_comma:
         parts = s.split(",")
-        if len(parts) == 2 and len(parts[1].strip()) <= 2:
+        after_comma = parts[-1].strip()
+        if len(parts) == 2 and len(after_comma) <= 2:
+            # "1234,56" → decimal separator (1-2 digits after comma)
             s = s.replace(",", ".")
         else:
+            # "1,000" or "1,234,567" → thousands separator (3 digits after comma)
             s = s.replace(",", "")
 
     # Remove spaces from numbers

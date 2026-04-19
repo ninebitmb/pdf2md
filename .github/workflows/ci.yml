@@ -7,8 +7,8 @@ on:
     branches: [main]
 
 env:
-  REGISTRY: harbor.ninebit.lt
-  IMAGE: harbor.ninebit.lt/pdf2md-converter/converter
+  REGISTRY: zot.ninebit.lt
+  IMAGE: zot.ninebit.lt/pdf2md-converter/converter
 
 jobs:
   lint:
@@ -40,8 +40,8 @@ jobs:
       - uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.HARBOR_USERNAME }}
-          password: ${{ secrets.HARBOR_PASSWORD }}
+          username: ${{ secrets.ZOT_USERNAME }}
+          password: ${{ secrets.ZOT_PASSWORD }}
 
       - name: Build and push
         uses: docker/build-push-action@v7
@@ -52,8 +52,8 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:main-${{ github.sha }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/cache/pdf2md-converter:prod
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/cache/pdf2md-converter:prod,mode=max
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/pdf2md-converter/cache:prod
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/pdf2md-converter/cache:prod,mode=max
 
   deploy:
     runs-on: [self-hosted, ninebit]
